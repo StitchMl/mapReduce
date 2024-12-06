@@ -14,9 +14,7 @@ $ go mod tidy
 
 ### 2) (Facoltativo) Compila i file di definizione gRPC (se usi gRPC)
 ```bash
-$ protoc --go_out=. --go_opt=paths=source_relative \
-         --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-         mapreduce/mapreduce.proto
+$ protoc --go_out=. --go-grpc_out=. mapreduce/mapreduce.proto
 ```
 
 ### 3) Esegui il programma
