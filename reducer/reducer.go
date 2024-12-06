@@ -7,13 +7,60 @@ import (
 	"mapReduce/utils"
 	"math/rand"
 	"os"
-	"sort"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	pb "mapReduce/mapreduce/mapreduce"
 )
+
+// merge combines two ordered slices `a` and `b` into a single ordered slice.
+func merge(a []int32, b []int32) []int32 {
+	// Slice finale che conterrà i valori ordinati.
+	var final []int32
+	// Indexes to scroll the elements of `a` and `b`.
+	i := 0
+	j := 0
+
+	// It compares the elements of `a` and `b` and adds them to the final result in order.
+	for i < len(a) && j < len(b) {
+		if a[i] < b[j] {
+			final = append(final, a[i]) // Adds the element of `a` to the result.
+			i++
+		} else {
+			final = append(final, b[j]) // Adds the element of `b` to the result.
+			j++
+		}
+	}
+
+	// Adds the remaining elements of `a` (if any) to the result.
+	for ; i < len(a); i++ {
+		final = append(final, a[i])
+	}
+
+	// Adds the remaining elements of `b` (if any) to the result.
+	for ; j < len(b); j++ {
+		final = append(final, b[j])
+	}
+
+	// The ordered result returns.
+	return final
+}
+
+// mergeSort implements the Merge Sort algorithm to sort an array.
+func mergeSort(items []int32) []int32 {
+	// Base case: if the slice has less than 2 elements, it is already ordered.
+	if len(items) < 2 {
+		return items
+	}
+
+	// Divide il slice in due metà.
+	first := mergeSort(items[:len(items)/2])  // Applies the Merge Sort recursively on the first half.
+	second := mergeSort(items[len(items)/2:]) // Applies the Merge Sort recursively on the second half.
+
+	// Combine the two ordered halves using `merge`.
+	return merge(first, second)
+}
 
 func Reducer(reducer utils.Reducer, master utils.Node) error {
 	// Connection to the gRPC server
@@ -73,10 +120,8 @@ func processReducerNode(ctx context.Context, client pb.MapReduceClient, request 
 	}
 
 	// Sort received data
-	sort.Slice(partition.SortedData, func(i, j int) bool {
-		return partition.SortedData[i] < partition.SortedData[j]
-	})
-	result := fmt.Sprintf("%v", partition.SortedData)
+	var list = mergeSort(partition.SortedData)
+	result := fmt.Sprintf("%v", list)
 	log.Printf(utils.ColoredText(utils.GreenBright, t+request.Name+": Ordered data: "+result))
 
 	// Write sorted data to a unique file
