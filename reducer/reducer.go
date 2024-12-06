@@ -16,7 +16,7 @@ import (
 
 // merge combines two ordered slices `a` and `b` into a single ordered slice.
 func merge(a []int32, b []int32) []int32 {
-	// Slice finale che conterrà i valori ordinati.
+	// Final slice that will contain the sorted values.
 	var final []int32
 	// Indexes to scroll the elements of `a` and `b`.
 	i := 0

@@ -24,4 +24,4 @@ $ go run main.go
 
 ---
 
-Run the programme to start the MapReduce system. Master, Mapper and Reducer nodes will be simulated on the same machine, and the results will be saved to file.
+Run the program to start the MapReduce system. Master, Mapper and Reducer nodes will be simulated on the same machine, and the results will be saved to file.
