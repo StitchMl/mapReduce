@@ -25,7 +25,10 @@ func Mapper(mapper utils.Mapper, master utils.Node) error {
 	defer func(conn *grpc.ClientConn) {
 		err := conn.Close()
 		if err != nil {
-
+			err := logError("Error while closing connection", err)
+			if err != nil {
+				return
+			}
 		}
 	}(conn)
 

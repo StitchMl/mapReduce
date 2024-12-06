@@ -19,12 +19,13 @@ func Reducer(reducer utils.Reducer, master utils.Node) error {
 	// Connection to the gRPC server
 	conn, err := grpc.Dial(master.IP+":"+master.Port, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return logError("Error while connecting to master", err)
+		logError("Error while connecting to master", err)
+		return err
 	}
 	defer func(conn *grpc.ClientConn) {
 		err := conn.Close()
 		if err != nil {
-
+			logError("Error while closing connection", err)
 		}
 	}(conn)
 
@@ -53,10 +54,7 @@ func Reducer(reducer utils.Reducer, master utils.Node) error {
 			minN = maxNum[i-1]
 		}
 		if err := processReducerNode(ctx, client, &pb.ReducerRequest{Name: reducer.Nodes[i].Name, MinRange: int32(minN), MaxRange: int32(maxNum[i])}); err != nil {
-			err := logError("Error during reducer processing "+node.Name, err)
-			if err != nil {
-				return err
-			}
+			logError("Error during reducer processing "+node.Name, err)
 		}
 	}
 
@@ -64,12 +62,14 @@ func Reducer(reducer utils.Reducer, master utils.Node) error {
 }
 
 func processReducerNode(ctx context.Context, client pb.MapReduceClient, request *pb.ReducerRequest) error {
-	log.Printf(utils.ColoredText(utils.PURPLE, "Reducer "+request.Name+": Processing start"))
+	var t = "Reducer "
+	log.Printf(utils.ColoredText(utils.PURPLE, t+request.Name+": Processing start"))
 
 	// Partition request from master
 	partition, err := client.GetPartition(ctx, request)
 	if err != nil {
-		return logError("Error during partition recovery for "+request.Name, err)
+		logError("Error during partition recovery for "+request.Name, err)
+		return err
 	}
 
 	// Sort received data
@@ -77,15 +77,16 @@ func processReducerNode(ctx context.Context, client pb.MapReduceClient, request 
 		return partition.SortedData[i] < partition.SortedData[j]
 	})
 	result := fmt.Sprintf("%v", partition.SortedData)
-	log.Printf(utils.ColoredText(utils.GreenBright, "Reducer "+request.Name+": Ordered data: "+result))
+	log.Printf(utils.ColoredText(utils.GreenBright, t+request.Name+": Ordered data: "+result))
 
 	// Write sorted data to a unique file
 	err = writeToUniqueFile(request.Name, partition.SortedData)
 	if err != nil {
-		return logError("Error writing to file for "+request.Name, err)
+		logError("Error writing to file for "+request.Name, err)
+		return err
 	}
 
-	log.Printf(utils.ColoredText(utils.BLUE, "Reducer "+request.Name+": Data successfully written to file"))
+	log.Printf(utils.ColoredText(utils.BLUE, t+request.Name+": Data successfully written to file"))
 
 	return nil
 }
@@ -103,7 +104,7 @@ func writeToUniqueFile(reducerName string, data []int32) error {
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
-
+			logError("Error: ", err)
 		}
 	}(file)
 
@@ -119,7 +120,6 @@ func writeToUniqueFile(reducerName string, data []int32) error {
 }
 
 // logError logs an error and returns it
-func logError(message string, err error) error {
+func logError(message string, err error) {
 	log.Printf(utils.ColoredText(utils.RedBold, message+": "+err.Error()))
-	return err
 }

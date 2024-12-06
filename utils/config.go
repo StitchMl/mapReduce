@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 )
 
@@ -46,6 +47,7 @@ func LoadConfig(filename string) (*Config, error) {
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
+			log.Printf(ColoredText(RedBold, "LoadConfig: "+err.Error()))
 		}
 	}(file)
 
@@ -76,18 +78,21 @@ func LoadConfig(filename string) (*Config, error) {
 
 // PrintConfig Function to print the configuration in a readable format
 func PrintConfig(config *Config) {
+	var name = "- Name: "
+	var port = ", Port: "
+	var ip = ", IP: "
 	fmt.Println(ColoredText(YELLOW, "Master Nodes:"))
 	for _, node := range config.Master.Nodes {
-		fmt.Printf(ColoredText(BLUE, "- Name: "+node.Name+", IP: "+node.IP+", Port: "+node.Port+"\n"))
+		fmt.Printf(ColoredText(BLUE, name+node.Name+ip+node.IP+port+node.Port+"\n"))
 	}
 
 	fmt.Println(ColoredText(YELLOW, "\nMapper Nodes:"))
 	for _, node := range config.Mapper.Nodes {
-		fmt.Printf(ColoredText(BLUE, "- Name: "+node.Name+", IP: "+node.IP+", Port: "+node.Port+"\n"))
+		fmt.Printf(ColoredText(BLUE, name+node.Name+ip+node.IP+port+node.Port+"\n"))
 	}
 
 	fmt.Println(ColoredText(YELLOW, "\nReducer Nodes:"))
 	for _, node := range config.Reducer.Nodes {
-		fmt.Printf(ColoredText(BLUE, "- Name: "+node.Name+", IP: "+node.IP+", Port: "+node.Port+"\n"))
+		fmt.Printf(ColoredText(BLUE, name+node.Name+ip+node.IP+port+node.Port+"\n"))
 	}
 }
