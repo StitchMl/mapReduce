@@ -3,81 +3,91 @@ package mapper
 import (
 	"context"
 	"fmt"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"log"
-	pb "mapReduce/mapreduce/mapreduce"
-	"mapReduce/utils"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	pb "mapReduce/mapreduce/mapreduce"
+	"mapReduce/utils"
 )
 
-type mapperServer struct {
-	pb.UnimplementedMapReduceServer
-}
-
-func (s *mapperServer) SendPartition(ctx context.Context, partition *pb.Partition) (*pb.Ack, error) {
-	log.Printf("Received sorted data: %v", partition.SortedData)
-	return &pb.Ack{Message: "Partition received"}, nil
-}
-
-func Mapper(mapper utils.Node, master utils.Node) error {
-	// Contact the gRPC server and print out its response
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	chunk, err := c.GetChunk(ctx, &pb.Name{Message: mapper.Name})
-	if err != nil {
-		log.Fatalf("could not get: %v", err)
-	}
-	log.Printf("Going to order the chunk...\n")
-	sort.Slice(chunk.Data, func(i, j int) bool {
-		return chunk.Data[i] < chunk.Data[j] // Compare the elements in ascending order
-	})
-
-	r, err := c.SendChunk(ctx, &pb.Chunk{Data: chunk.Data})
-	if err != nil {
-		log.Fatalf("could not send: %v", err)
-	}
-	log.Printf("Greeting: %s", r.GetMessage())
-
-	return nil
-
+// Mapper manages the interaction between the mapper nodes and the master
+func Mapper(mapper utils.Mapper, master utils.Node) error {
 	// Connection to the gRPC server
-	conn, err := grpc.Dial(master.IP+":"+mapper.Port, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.Dial(master.IP+":"+master.Port, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		log.Fatalf("Server connection error: %v", err)
+		return logError("Error while connecting to master", err)
 	}
-	defer conn.Close()
+	defer func(conn *grpc.ClientConn) {
+		err := conn.Close()
+		if err != nil {
 
-	// Client Creation
+		}
+	}(conn)
+
+	log.Println(utils.ColoredText(utils.PurpleBoldBright, "Mapper connected to the server!"))
 	client := pb.NewMapReduceClient(conn)
 
+	// Context Definition
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	var wg sync.WaitGroup
-	mapperCount := 5 // numero di client concorrenti
+	mapperCount := len(mapper.Nodes)
 
-	// Invia messaggi contemporaneamente da più client
-	for i := 0; i < clientCount; i++ {
+	log.Printf(utils.ColoredText(utils.BLUE, "Number of mappers: "+strconv.Itoa(mapperCount)))
+
+	for _, node := range mapper.Nodes {
 		wg.Add(1)
-		go func(clientID int) {
+		go func(node utils.Node) {
 			defer wg.Done()
-			// Creazione della richiesta
-			req := &Request{Message: fmt.Sprintf("Messaggio dal client %d", clientID)}
-
-			// Chiamata al metodo del server
-			res, err := client.SendMessage(context.Background(), req)
-			if err != nil {
-				log.Printf("Errore nella richiesta dal client %d: %v", clientID, err)
-				return
-			}
-			fmt.Printf("Risposta dal server al client %d: %s\n", clientID, res.GetReply())
-		}(i)
+			handleMapperNode(ctx, client, node)
+		}(node)
 	}
 
-	// Aspetta che tutte le goroutine terminino
 	wg.Wait()
+	return nil
+}
 
-	// Attendi un po' di tempo prima che il client termini (utile se hai bisogno di vedere l'output)
-	time.Sleep(1 * time.Second)
+// handleMapperNode handles operations for a single mapper node
+func handleMapperNode(ctx context.Context, client pb.MapReduceClient, node utils.Node) {
+	log.Printf(utils.ColoredText(utils.GREEN, "Processing node mapper: "+node.Name))
+
+	// Getting the chunk
+	chunk, err := client.GetChunk(ctx, &pb.NodeName{Name: node.Name})
+	if err != nil {
+		err := logError("Error during chunk retrieval for "+node.Name, err)
+		if err != nil {
+			return
+		}
+		return
+	}
+	result := fmt.Sprintf("%v", chunk.Data)
+	log.Printf(utils.ColoredText(utils.GreenBold, "Chunk received for "+node.Name+": "+result))
+
+	// Sorting the data
+	sort.Slice(chunk.Data, func(i, j int) bool {
+		return chunk.Data[i] < chunk.Data[j]
+	})
+
+	// Send ordered chunk
+	response, err := client.SendChunk(ctx, &pb.Chunk{Data: chunk.Data})
+	if err != nil {
+		err := logError("Error while sending chunk for "+node.Name, err)
+		if err != nil {
+			return
+		}
+		return
+	}
+	log.Printf(utils.ColoredText(utils.MAGENTA, node.Name+": "+response.GetMessage()))
+}
+
+// logError logs an error and returns nil
+func logError(message string, err error) error {
+	log.Printf(utils.ColoredText(utils.RedBold, message+": "+err.Error()))
+	return err
 }

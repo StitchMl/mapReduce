@@ -2,21 +2,27 @@ package master
 
 import (
 	"context"
+	"fmt"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"log"
 	pb "mapReduce/mapreduce/mapreduce"
 	"mapReduce/utils"
+	"math"
 	"math/rand"
 	"net"
+	"sync"
 	"time"
 )
 
-var chunks [][]int
-var partions [][]int32
+var (
+	chunks     [][]int
+	partitions [][]int32
+	mutex      sync.Mutex // To synchronise access to shared slices
+)
 
 // splitIntoChunks divides a list into chunks of equal size.
-// If the length of the list is not a multiple of mapperNum, the last chunk will have fewer elements.
 func splitIntoChunks(list []int, mapperNum int) {
 	if mapperNum <= 0 {
 		panic("mapperNum must be greater than zero")
@@ -27,103 +33,126 @@ func splitIntoChunks(list []int, mapperNum int) {
 		if end > len(list) {
 			end = len(list)
 		}
+		mutex.Lock()
 		chunks = append(chunks, list[i:end])
+		mutex.Unlock()
 	}
+
+	log.Println(utils.ColoredText(utils.GreenBold, "Data successfully divided into chunks."))
 }
 
+// removeRandomChunk removes a random chunk from the list and returns it.
+func removeRandomChunk() ([]int, error) {
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	if len(chunks) == 0 {
+		return nil, fmt.Errorf("no chunks available to send")
+	}
+
+	src := rand.NewSource(time.Now().UnixNano())
+	r := rand.New(src)
+	randomIndex := r.Intn(len(chunks))
+
+	selectedChunk := chunks[randomIndex]
+	chunks = append(chunks[:randomIndex], chunks[randomIndex+1:]...)
+	return selectedChunk, nil
+}
+
+// convertToInt32Slice converts a slice of int to a slice of int32.
+func convertToInt32Slice(list []int) []int32 {
+	result := make([]int32, len(list))
+	for i, v := range list {
+		result[i] = int32(v)
+	}
+	return result
+}
+
+// masterServer implements the gRPC server for the master.
 type masterServer struct {
 	pb.UnimplementedMapReduceServer
 }
 
-func (s *masterServer) GetChunk(ctx context.Context, name *pb.Name) (*pb.Chunk, error) {
-	if len(chunks) == 0 {
-		log.Println(utils.ColoredText(utils.RedBold, "No chunks available to send"))
-		return nil, nil
+func (s *masterServer) GetChunk(ctx context.Context, name *pb.NodeName) (*pb.Chunk, error) {
+	selectedChunk, err := removeRandomChunk()
+	if err != nil {
+		log.Println(utils.ColoredText(utils.RedBold, err.Error()))
+		return nil, status.Error(codes.NotFound, err.Error())
 	}
 
-	// Simulates partitioning and distribution to mappers
-	log.Printf("Sending a chunk to the mapper: %s", name)
+	int32Slice := convertToInt32Slice(selectedChunk)
+	result := fmt.Sprintf("%v", int32Slice)
+	log.Printf(utils.ColoredText(utils.YellowBright, "Sending the chunk to the mapper "+name.Name+": "+result))
 
-	// Seed the random number generator
-	src := rand.NewSource(time.Now().UnixNano())
-	r := rand.New(src) // Create a random number generator with the source
-	randomIndex := r.Intn(len(chunks))
-
-	// Converts the selected chunk
-	selectedChunk := chunks[randomIndex]
-
-	// Remove the chunk from the list
-	chunks = append(chunks[:randomIndex], chunks[randomIndex+1:]...)
-
-	// Creating an empty slice of int32 with the same length
-	var int32Slice []int32
-
-	// Conversion from []int to []int32
-	for _, v := range selectedChunk {
-		int32Slice = append(int32Slice, int32(v)) // Converts each int to int32 and adds to the slice
-	}
-
-	log.Printf("Sending a random chunk to the mapper: %s, Chunk: %v\n", name, selectedChunk)
 	return &pb.Chunk{Data: int32Slice}, nil
 }
 
 func (s *masterServer) SendChunk(ctx context.Context, chunk *pb.Chunk) (*pb.Ack, error) {
-	// Simulates partitioning and distribution to mappers
-	log.Printf("Received chunk: %v\n", chunk.Data)
-	partions = append(partions, chunk.Data)
-	return &pb.Ack{Message: "Chunk received\n"}, nil
+	mutex.Lock()
+	partitions = append(partitions, chunk.Data)
+	mutex.Unlock()
+
+	result := fmt.Sprintf("%v", chunk.Data)
+	log.Printf(utils.ColoredText(utils.GreenBold, "Received chunk: "+result))
+	return &pb.Ack{Message: "Chunk received"}, nil
 }
 
-func (s *masterServer) GetPartion(ctx context.Context, name *pb.Name, num *pb.MaxNum) (*pb.Ack, error) {
-	for len(partions) < 3 {
-		isPrinted := false // Control variable for one-time printing
-
-		if !isPrinted {
-			log.Println(utils.ColoredText(utils.YellowBold, "No chunks available to send. I'm wait more chunk...\n"))
-			isPrinted = true // Set to true to avoid further printing
+func (s *masterServer) GetPartition(ctx context.Context, reducer *pb.ReducerRequest) (*pb.Partition, error) {
+	// Wait until there are at least 3 partitions
+	for {
+		mutex.Lock()
+		if len(partitions) >= 3 {
+			mutex.Unlock()
+			break
 		}
+		mutex.Unlock()
 
-		// Add a pause to avoid overly aggressive loops (optional)
+		log.Println(utils.ColoredText(utils.YellowBold, "Waiting for more chunks..."))
 		time.Sleep(500 * time.Millisecond)
 	}
-	// Simulates partitioning and distribution to mappers
-	log.Printf("Sending to the reducer: %s", name)
-	var result []int32
 
-	for _, sublist := range partions {
+	log.Printf("Sending data to the reducer %s with range [%d, %d)", reducer.Name, reducer.MinRange, reducer.MaxRange)
+
+	result := filterPartitionByRange(partitions, reducer.MinRange, reducer.MaxRange)
+	return &pb.Partition{SortedData: result}, nil
+}
+
+// filterPartitionByRange filters the data according to the range provided.
+func filterPartitionByRange(partitions [][]int32, min, max int32) []int32 {
+	var result []int32
+	for _, sublist := range partitions {
 		for _, value := range sublist {
-			// Check if value is <= num
-			if value <= num.Message {
+			if value >= min && value < max {
 				result = append(result, value)
 			}
 		}
 	}
-	return &pb.Ack{Message: "Partion received\n"}, nil
+	return result
 }
 
-func Master(config utils.Config, port string, argument []int) error {
-	splitIntoChunks(argument, len(config.Mapper.Nodes))
-	log.Printf("Has been split into chunks...\n")
+func Master(config utils.Config, argument []int) error {
+	// Split the data into chunks
+	go splitIntoChunks(argument, len(config.Mapper.Nodes))
 
 	// Creating the listener for the server
-	listener, err := net.Listen("tcp", ":"+port)
+	listener, err := net.Listen("tcp", config.Master.Nodes[0].IP+":"+config.Master.Nodes[0].Port)
 	if err != nil {
 		log.Fatalf("Error when starting the listener: %v", err)
 	}
 
 	// Creation of the gRPC server
-	grpcServer := grpc.NewServer()
+	grpcServer := grpc.NewServer(grpc.MaxConcurrentStreams(math.MaxUint32))
 
 	// Service Registration
 	pb.RegisterMapReduceServer(grpcServer, &masterServer{})
 
-	// Add support for reflection (useful for debugging and tools such as grpcurl)
-	reflection.Register(grpcServer)
-
 	// Server start-up
-	log.Println("Master listening on port " + port + "...\n")
-	if err := grpcServer.Serve(listener); err != nil {
+	println(utils.ColoredText(utils.CyanBoldBright, "Master listening on "+config.Master.Nodes[0].IP+":"+config.Master.Nodes[0].Port+"...\n"))
+	err = grpcServer.Serve(listener)
+	if err != nil {
 		log.Fatalf("Error during server start-up: %v", err)
+		return err
 	}
-	return nil
+
+	select {}
 }

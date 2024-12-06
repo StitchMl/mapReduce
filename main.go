@@ -9,7 +9,6 @@ import (
 	"mapReduce/reducer"
 	"mapReduce/utils"
 	"math/rand"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -28,10 +27,10 @@ func startMaster(wg *sync.WaitGroup, config utils.Config) {
 
 	// Add n random numbers to the list
 	for i := 0; i < 9; i++ {
-		list = append(list, r.Int()) // Add a random int32
+		list = append(list, r.Intn(1000)) // Add a random int32
 	}
 	for _, masterConfig := range config.Master.Nodes {
-		err := master.Master(config, masterConfig.Port, list)
+		err := master.Master(config, list)
 		if err != nil {
 			log.Fatalf("Error loading Master: %v", err)
 			return
@@ -40,28 +39,28 @@ func startMaster(wg *sync.WaitGroup, config utils.Config) {
 	}
 }
 
-func startMapper(wg *sync.WaitGroup, config utils.Config, mapperID int) {
+func startMapper(wg *sync.WaitGroup, config utils.Config) {
 	defer wg.Done()
-	fmt.Printf(utils.ColoredText(utils.CYAN, "Starting Mapper "+strconv.Itoa(mapperID)+"...\n"))
+	fmt.Printf(utils.ColoredText(utils.CYAN, "Starting Mappers...\n"))
 	// Logic to start the mapper with specific ID
-	err := mapper.Mapper(config.Mapper.Nodes[mapperID], config.Master.Nodes[0])
+	err := mapper.Mapper(config.Mapper, config.Master.Nodes[0])
 	if err != nil {
-		log.Fatalf("Error loading %s: %v", config.Mapper.Nodes[mapperID].Name, err)
+		log.Fatalf("Error loading Mappers: %v", err)
 		return
 	}
-	fmt.Println(utils.ColoredText(utils.GREEN, "Mapper "+config.Mapper.Nodes[mapperID].Name+"is started...\n"))
+	fmt.Println(utils.ColoredText(utils.GREEN, "Mappers are started...\n"))
 }
 
-func startReducer(wg *sync.WaitGroup, config utils.Config, reducerID int) {
+func startReducer(wg *sync.WaitGroup, config utils.Config) {
 	defer wg.Done()
-	fmt.Printf(utils.ColoredText(utils.CYAN, "Starting Reducer "+strconv.Itoa(reducerID)+"...\n"))
+	fmt.Printf(utils.ColoredText(utils.CYAN, "Starting Reducers...\n"))
 	// Logic to start the reducer with specific ID
-	err := reducer.Reducer(config.Reducer.Nodes[reducerID], config.Master.Nodes[0])
+	err := reducer.Reducer(config.Reducer, config.Master.Nodes[0])
 	if err != nil {
-		log.Fatalf("Error loading %s: %v", config.Reducer.Nodes[reducerID].Name, err)
+		log.Fatalf("Error loading Reducer: %v", err)
 		return
 	}
-	fmt.Println(utils.ColoredText(utils.GreenBold, "Reducer "+config.Reducer.Nodes[reducerID].Name+"is started...\n"))
+	fmt.Println(utils.ColoredText(utils.GreenBold, "Reducer are started...\n"))
 }
 
 func main() {
@@ -84,19 +83,13 @@ func main() {
 
 	// Start the mappers
 	fmt.Println(utils.ColoredText(utils.MAGENTA, "Starting the mappers...\n"))
-	for i, configMapper := range config.Mapper.Nodes {
-		fmt.Println(utils.ColoredText(utils.PURPLE, "Starting "+configMapper.Name+"...\n"))
-		wg.Add(1)
-		go startMapper(&wg, *config, i)
-	}
+	wg.Add(1)
+	go startMapper(&wg, *config)
 
 	// Start the reducers
 	fmt.Println(utils.ColoredText(utils.MAGENTA, "Starting the reducers...\n"))
-	for i, configReducer := range config.Reducer.Nodes {
-		fmt.Println(utils.ColoredText(utils.PURPLE, "Starting "+configReducer.Name+"...\n"))
-		wg.Add(1)
-		go startReducer(&wg, *config, i)
-	}
+	wg.Add(1)
+	go startReducer(&wg, *config)
 
 	// Wait for all goroutines to finish
 	wg.Wait()
