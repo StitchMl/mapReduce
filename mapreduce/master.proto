@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+option go_package = "mapreduce/master";
+
+package mapreduce.master;
+
+// MapReduce Service
+service MapReduce {
+  // Retrieve a chunk for processing
+  rpc GetChunk (Node) returns (Chunk);
+}
+
+// Data of a chunk to be processed
+message Chunk {
+  repeated int32 data = 1; // List of integers
+}
+
+// Node name
+message Node {
+  string name = 1; // Node name mapper/reducer
+}

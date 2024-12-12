@@ -14,7 +14,8 @@ $ go mod tidy
 
 ### 2) Compile gRPC definition files
 ```bash
-$ protoc --go_out=. --go-grpc_out=. mapreduce/mapreduce.proto
+$ protoc --go_out=. --go-grpc_out=. mapreduce/master.proto
+$ protoc --go_out=. --go-grpc_out=. mapreduce/reducer.proto
 ```
 
 ### 3) Run the programme

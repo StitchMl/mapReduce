@@ -43,7 +43,7 @@ func startMapper(wg *sync.WaitGroup, config utils.Config) {
 	defer wg.Done()
 	fmt.Printf(utils.ColoredText(utils.CYAN, "Starting Mappers...\n"))
 	// Logic to start the mapper with specific ID
-	err := mapper.Mapper(config.Mapper, config.Master.Nodes[0])
+	err := mapper.Mapper(config)
 	if err != nil {
 		log.Fatalf("Error loading Mappers: %v", err)
 		return
@@ -54,13 +54,29 @@ func startMapper(wg *sync.WaitGroup, config utils.Config) {
 func startReducer(wg *sync.WaitGroup, config utils.Config) {
 	defer wg.Done()
 	fmt.Printf(utils.ColoredText(utils.CYAN, "Starting Reducers...\n"))
-	// Logic to start the reducer with specific ID
-	err := reducer.Reducer(config.Reducer, config.Master.Nodes[0])
-	if err != nil {
-		log.Fatalf("Error loading Reducer: %v", err)
-		return
+
+	red := config.Reducer
+	var maxNum []int
+	src := rand.NewSource(time.Now().UnixNano())
+	r := rand.New(src)
+	for i := 0; i < len(red.Nodes)-1; i++ {
+		maxNum = append(maxNum, r.Intn(1000))
 	}
-	fmt.Println(utils.ColoredText(utils.GreenBold, "Reducer are started...\n"))
+	maxNum = append(maxNum, 1000)
+
+	for i := range red.Nodes {
+		minN := 0
+		if i > 0 {
+			minN = maxNum[i-1]
+		}
+		go func(idx, minN, maxN int) {
+			err := reducer.Reducer(config, idx, minN, maxN)
+			if err != nil {
+				log.Fatalf("Error loading Reducer: %v", err)
+			}
+		}(i, minN, maxNum[i])
+	}
+	fmt.Println(utils.ColoredText(utils.GreenBold, "Reducers are started...\n"))
 }
 
 func main() {

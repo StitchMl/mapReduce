@@ -3,16 +3,45 @@ package reducer
 import (
 	"context"
 	"fmt"
-	"log"
-	"mapReduce/utils"
-	"math/rand"
-	"os"
-	"time"
-
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-	pb "mapReduce/mapreduce/mapreduce"
+	"log"
+	pb "mapReduce/mapreduce/reducer"
+	"mapReduce/utils"
+	"math"
+	"net"
+	"os"
+	"sync"
+	"time"
 )
+
+// Data contains DataVar specific to each reducer
+type Data struct {
+	Name       string
+	MinN       int
+	MaxN       int
+	partitions [][]int32
+	mu         sync.Mutex
+}
+
+var (
+	mu      sync.Mutex
+	DataVar []*Data
+)
+
+// reducerServer implements the gRPC server for the reducer.
+type reducerServer struct {
+	pb.UnimplementedMapReduceServer
+	data *Data
+}
+
+func newReducerServer(data *Data) *reducerServer {
+	return &reducerServer{data: data}
+}
+
+// logError logs an error and returns it
+func logError(message string, err error) {
+	log.Printf(utils.ColoredText(utils.RedBold, message+": "+err.Error()))
+}
 
 // merge combines two ordered slices `a` and `b` into a single ordered slice.
 func merge(a []int32, b []int32) []int32 {
@@ -62,81 +91,7 @@ func mergeSort(items []int32) []int32 {
 	return merge(first, second)
 }
 
-func Reducer(reducer utils.Reducer, master utils.Node) error {
-	// Connection to the gRPC server
-	conn, err := grpc.Dial(master.IP+":"+master.Port, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		logError("Error while connecting to master", err)
-		return err
-	}
-	defer func(conn *grpc.ClientConn) {
-		err := conn.Close()
-		if err != nil {
-			logError("Error while closing connection", err)
-		}
-	}(conn)
-
-	client := pb.NewMapReduceClient(conn)
-
-	// Context Definition
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Creates an empty maxNum of type int32
-	var maxNum []int
-
-	// Add n random numbers to the maxNum
-	src := rand.NewSource(time.Now().UnixNano())
-	r := rand.New(src)
-	for i := 0; i < len(reducer.Nodes)-1; i++ {
-		maxNum = append(maxNum, r.Intn(1000)) // Add a random int32
-	}
-	maxNum = append(maxNum, 1000)
-	var minN int
-
-	for i, node := range reducer.Nodes {
-		if i == 0 {
-			minN = 0
-		} else {
-			minN = maxNum[i-1]
-		}
-		if err := processReducerNode(ctx, client, &pb.ReducerRequest{Name: reducer.Nodes[i].Name, MinRange: int32(minN), MaxRange: int32(maxNum[i])}); err != nil {
-			logError("Error during reducer processing "+node.Name, err)
-		}
-	}
-
-	return nil
-}
-
-func processReducerNode(ctx context.Context, client pb.MapReduceClient, request *pb.ReducerRequest) error {
-	var t = "Reducer "
-	log.Printf(utils.ColoredText(utils.PURPLE, t+request.Name+": Processing start"))
-
-	// Partition request from master
-	partition, err := client.GetPartition(ctx, request)
-	if err != nil {
-		logError("Error during partition recovery for "+request.Name, err)
-		return err
-	}
-
-	// Sort received data
-	var list = mergeSort(partition.SortedData)
-	result := fmt.Sprintf("%v", list)
-	log.Printf(utils.ColoredText(utils.GreenBright, t+request.Name+": Ordered data: "+result))
-
-	// Write sorted data to a unique file
-	err = writeToUniqueFile(request.Name, partition.SortedData)
-	if err != nil {
-		logError("Error writing to file for "+request.Name, err)
-		return err
-	}
-
-	log.Printf(utils.ColoredText(utils.BLUE, t+request.Name+": Data successfully written to file"))
-
-	return nil
-}
-
-// writeToUniqueFile writes the sorted data to a new unique file based on the reducer's name
+// writeToUniqueFile writes the sorted DataVar to a new unique file based on the reducer's name
 func writeToUniqueFile(reducerName string, data []int32) error {
 	// Generate a unique file name using timestamp
 	fileName := fmt.Sprintf("reducer_output_%s_%d.txt", reducerName, time.Now().UnixNano())
@@ -153,7 +108,7 @@ func writeToUniqueFile(reducerName string, data []int32) error {
 		}
 	}(file)
 
-	// Write the sorted data to the file
+	// Write the sorted DataVar to the file
 	for _, value := range data {
 		_, err := file.WriteString(fmt.Sprintf("%d\n", value))
 		if err != nil {
@@ -164,7 +119,112 @@ func writeToUniqueFile(reducerName string, data []int32) error {
 	return nil
 }
 
-// logError logs an error and returns it
-func logError(message string, err error) {
-	log.Printf(utils.ColoredText(utils.RedBold, message+": "+err.Error()))
+// filterPartitionByRange filters the DataVar according to the range provided.
+func filterPartitionByRange(partitions [][]int32, minN int, maxN int) []int32 {
+	var result []int32
+	for _, sublist := range partitions {
+		for _, value := range sublist {
+			if value >= int32(minN) && value < int32(maxN) {
+				result = append(result, value)
+			}
+		}
+	}
+	return result
+}
+
+func processReducerNode(partition []int32, name string) error {
+	log.Printf(utils.ColoredText(utils.PURPLE, name+": Processing start"))
+
+	list := mergeSort(partition)
+	result := fmt.Sprintf("%v", list)
+	log.Printf(utils.ColoredText(utils.GreenBright, name+": Ordered DataVar: "+result))
+
+	err := writeToUniqueFile(name, list)
+	if err != nil {
+		logError("Error writing to file for "+name, err)
+		return err
+	}
+
+	log.Printf(utils.ColoredText(utils.BLUE, name+": Data successfully written to file"))
+	return nil
+}
+
+func startReduce(state *Data) {
+	log.Printf(utils.ColoredText(utils.WhiteBoldBright, state.Name+": starting while phase..."))
+	for {
+		log.Printf(utils.ColoredText(utils.BlueBold, state.Name+": trying to start merge..."))
+
+		mu.Lock()
+		if len(state.partitions) == 0 {
+			mu.Unlock()
+			log.Printf(utils.ColoredText(utils.YELLOW, state.Name+fmt.Sprintf(": Have %d partitions to process. Waiting...\n", len(state.partitions))))
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		// Filter state for the current range
+		result := filterPartitionByRange(state.partitions, state.MinN, state.MaxN)
+		if len(result) == 0 {
+			mu.Unlock()
+			log.Printf(utils.ColoredText(utils.YELLOW, state.Name+": No state in range to process...\n"))
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		state.partitions = nil
+		mu.Unlock()
+
+		// Process filtered state
+		err := processReducerNode(result, state.Name)
+		if err != nil {
+			logError(state.Name+": Error during merging phase", err)
+		}
+
+		log.Printf(utils.ColoredText(utils.GreenBright, state.Name+": finishing merge phase...\n"))
+	}
+}
+
+func (s *reducerServer) GetRange(_ context.Context, mapper *pb.NodeName) (*pb.ReducerRequest, error) {
+	log.Printf("%s: GetRange of %s (%d, %d]", mapper.Name, s.data.Name, s.data.MinN, s.data.MaxN)
+
+	node := pb.ReducerRequest{
+		Name:     s.data.Name,
+		MinRange: int32(s.data.MinN),
+		MaxRange: int32(s.data.MaxN),
+	}
+	return &node, nil
+}
+
+func (s *reducerServer) SendPartition(_ context.Context, chunk *pb.Partition) (*pb.Ack, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if len(chunk.SortedData) == 0 {
+		log.Printf(utils.ColoredText(utils.YELLOW, "Received empty chunk, ignoring..."))
+		return &pb.Ack{Message: "Chunk ignored (empty)"}, nil
+	}
+	s.data.partitions = append(s.data.partitions, chunk.SortedData)
+
+	log.Printf(utils.ColoredText(utils.GreenBold, s.data.Name+" received chunk: "+fmt.Sprintf("%v", chunk.SortedData)))
+	return &pb.Ack{Message: "Chunk received"}, nil
+}
+
+func Reducer(config utils.Config, num int, minNum int, maxNum int) error {
+	reducer := config.Reducer.Nodes[num]
+	DataVar = append(DataVar, &Data{Name: reducer.Name, MinN: minNum, MaxN: maxNum})
+	n := len(DataVar) - 1
+	println(fmt.Sprintf("%s: %d...", reducer.Name, len(DataVar)))
+	log.Printf("Reducer %d initializing with DataVar: Name=%s, Min=%d, Max=%d", n+1, DataVar[n].Name, DataVar[n].MinN, DataVar[n].MaxN)
+
+	go startReduce(DataVar[n]) // Ensure that this function does not overwrite or modify `DataVar`.
+
+	listener, err := net.Listen("tcp", reducer.IP+":"+reducer.Port)
+	if err != nil {
+		log.Fatalf(DataVar[n].Name+": Error when starting the listener: %v", err)
+	}
+
+	grpcServer := grpc.NewServer(grpc.MaxConcurrentStreams(math.MaxUint32))
+	pb.RegisterMapReduceServer(grpcServer, newReducerServer(DataVar[n]))
+
+	log.Printf("Reducer %s listening on %s:%s...\n", DataVar[n].Name, reducer.IP, reducer.Port)
+	return grpcServer.Serve(listener)
 }
