@@ -94,6 +94,24 @@ func handleMapperNode(ctx context.Context, client pm.MapReduceClient, node utils
 	log.Printf(utils.ColoredText(utils.GreenBold, node.Name+": sent the whole chunk..."))
 }
 
+func closeConnection(conn *grpc.ClientConn) {
+	err := conn.Close()
+	if err != nil {
+		err := logError("Error while closing connection", err)
+		if err != nil {
+			return
+		}
+	}
+}
+
+func startMapper(wg *sync.WaitGroup, ctx context.Context, client pm.MapReduceClient, node utils.Node) {
+	wg.Add(1)
+	go func(node utils.Node) {
+		defer wg.Done()
+		handleMapperNode(ctx, client, node)
+	}(node)
+}
+
 // Mapper manages the interaction between the mapper nodes and the master
 func Mapper(config utils.Config) error {
 	master := config.Master.Nodes[0]
@@ -108,15 +126,7 @@ func Mapper(config utils.Config) error {
 	if err != nil {
 		return logError("Error while connecting to master", err)
 	}
-	defer func(conn *grpc.ClientConn) {
-		err := conn.Close()
-		if err != nil {
-			err := logError("Error while closing connection", err)
-			if err != nil {
-				return
-			}
-		}
-	}(cons[0])
+	defer closeConnection(cons[0])
 
 	log.Println(utils.ColoredText(utils.PurpleBoldBright, "Mapper connected to the server!"))
 	client := pm.NewMapReduceClient(cons[0])
@@ -127,17 +137,7 @@ func Mapper(config utils.Config) error {
 		if err != nil {
 			return logError("Error while connecting to "+red.Name, err)
 		}
-		func() {
-			defer func(conn *grpc.ClientConn) {
-				err = conn.Close()
-				if err != nil {
-					err = logError("Error while closing connection", err)
-					if err != nil {
-						return
-					}
-				}
-			}(cons[i])
-		}()
+		defer closeConnection(cons[i])
 
 		log.Println(utils.ColoredText(utils.PurpleBoldBright, "Mapper connected to "+red.Name))
 		clients[i] = pr.NewMapReduceClient(cons[i])
@@ -153,11 +153,7 @@ func Mapper(config utils.Config) error {
 	log.Printf(utils.ColoredText(utils.BLUE, "Number of mappers: "+strconv.Itoa(mapperCount)))
 
 	for _, node := range mapper.Nodes {
-		wg.Add(1)
-		go func(node utils.Node) {
-			defer wg.Done()
-			handleMapperNode(ctx, client, node)
-		}(node)
+		startMapper(&wg, ctx, client, node)
 	}
 
 	wg.Wait()
